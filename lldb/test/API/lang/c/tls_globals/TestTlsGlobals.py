@@ -42,6 +42,7 @@ class TlsGlobalTestCase(TestBase):
         bugnumber="llvm.org/pr28392",
         oslist=no_match(lldbplatformutil.getDarwinOSTriples()),
     )
+    @expectedFailureIfFn(lldbplatformutil.xcode15LinkerBug)
     def test(self):
         """Test thread-local storage."""
         self.build()

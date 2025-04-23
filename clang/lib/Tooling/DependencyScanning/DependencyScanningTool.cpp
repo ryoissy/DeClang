@@ -39,16 +39,12 @@ public:
     Dependencies.push_back(std::string(File));
   }
 
-  void handlePrebuiltModuleDependency(PrebuiltModuleDep PMD) override {
-    // Same as `handleModuleDependency`.
-  }
-
-  void handleModuleDependency(ModuleDeps MD) override {
-    // These are ignored for the make format as it can't support the full
-    // set of deps, and handleFileDependency handles enough for implicitly
-    // built modules to work.
-  }
-
+  // These are ignored for the make format as it can't support the full
+  // set of deps, and handleFileDependency handles enough for implicitly
+  // built modules to work.
+  void handlePrebuiltModuleDependency(PrebuiltModuleDep PMD) override {}
+  void handleModuleDependency(ModuleDeps MD) override {}
+  void handleDirectModuleDependency(ModuleID ID) override {}
   void handleContextHash(std::string Hash) override {}
 
   void printDependencies(std::string &S) {
@@ -103,6 +99,8 @@ class EmptyDependencyConsumer : public DependencyConsumer {
 
   void handleModuleDependency(ModuleDeps MD) override {}
 
+  void handleDirectModuleDependency(ModuleID ID) override {}
+
   void handleContextHash(std::string Hash) override {}
 };
 
@@ -128,7 +126,7 @@ public:
 
 private:
   llvm::cas::CachingOnDiskFileSystem &FS;
-  Optional<std::string> CASFileSystemRootID;
+  std::optional<std::string> CASFileSystemRootID;
 };
 
 /// Returns an IncludeTree containing the dependencies.
@@ -211,10 +209,65 @@ DependencyScanningTool::getIncludeTreeFromCompilerInvocation(
   return Consumer.getIncludeTree();
 }
 
+llvm::Expected<P1689Rule> DependencyScanningTool::getP1689ModuleDependencyFile(
+    const CompileCommand &Command, StringRef CWD, std::string &MakeformatOutput,
+    std::string &MakeformatOutputPath) {
+  class P1689ModuleDependencyPrinterConsumer
+      : public MakeDependencyPrinterConsumer {
+  public:
+    P1689ModuleDependencyPrinterConsumer(P1689Rule &Rule,
+                                         const CompileCommand &Command)
+        : Filename(Command.Filename), Rule(Rule) {
+      Rule.PrimaryOutput = Command.Output;
+    }
+
+    void handleProvidedAndRequiredStdCXXModules(
+        std::optional<P1689ModuleInfo> Provided,
+        std::vector<P1689ModuleInfo> Requires) override {
+      Rule.Provides = Provided;
+      if (Rule.Provides)
+        Rule.Provides->SourcePath = Filename.str();
+      Rule.Requires = Requires;
+    }
+
+    StringRef getMakeFormatDependencyOutputPath() {
+      if (Opts->OutputFormat != DependencyOutputFormat::Make)
+        return {};
+      return Opts->OutputFile;
+    }
+
+  private:
+    StringRef Filename;
+    P1689Rule &Rule;
+  };
+
+  class P1689ActionController : public DependencyActionController {
+  public:
+    // The lookupModuleOutput is for clang modules. P1689 format don't need it.
+    std::string lookupModuleOutput(const ModuleID &,
+                                   ModuleOutputKind Kind) override {
+      return "";
+    }
+  };
+
+  P1689Rule Rule;
+  P1689ModuleDependencyPrinterConsumer Consumer(Rule, Command);
+  P1689ActionController Controller;
+  auto Result = Worker.computeDependencies(CWD, Command.CommandLine, Consumer,
+                                           Controller);
+  if (Result)
+    return std::move(Result);
+
+  MakeformatOutputPath = Consumer.getMakeFormatDependencyOutputPath();
+  if (!MakeformatOutputPath.empty())
+    Consumer.printDependencies(MakeformatOutput);
+  return Rule;
+}
+
 llvm::Expected<TranslationUnitDeps>
 DependencyScanningTool::getTranslationUnitDependencies(
     const std::vector<std::string> &CommandLine, StringRef CWD,
-    const llvm::StringSet<> &AlreadySeen,
+    const llvm::DenseSet<ModuleID> &AlreadySeen,
     LookupModuleOutputCallback LookupModuleOutput) {
   FullDependencyConsumer Consumer(AlreadySeen);
   auto Controller = createActionController(LookupModuleOutput);
@@ -227,7 +280,7 @@ DependencyScanningTool::getTranslationUnitDependencies(
 
 llvm::Expected<ModuleDepsGraph> DependencyScanningTool::getModuleDependencies(
     StringRef ModuleName, const std::vector<std::string> &CommandLine,
-    StringRef CWD, const llvm::StringSet<> &AlreadySeen,
+    StringRef CWD, const llvm::DenseSet<ModuleID> &AlreadySeen,
     LookupModuleOutputCallback LookupModuleOutput) {
   FullDependencyConsumer Consumer(AlreadySeen);
   auto Controller = createActionController(LookupModuleOutput);
@@ -250,14 +303,13 @@ TranslationUnitDeps FullDependencyConsumer::takeTranslationUnitDeps() {
 
   for (auto &&M : ClangModuleDeps) {
     auto &MD = M.second;
-    if (MD.ImportedByMainFile)
-      TU.ClangModuleDeps.push_back(MD.ID);
     // TODO: Avoid handleModuleDependency even being called for modules
     //   we've already seen.
     if (AlreadySeen.count(M.first))
       continue;
     TU.ModuleGraph.push_back(std::move(MD));
   }
+  TU.ClangModuleDeps = std::move(DirectModuleDeps);
 
   return TU;
 }

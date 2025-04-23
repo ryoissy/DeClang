@@ -8,20 +8,13 @@
 
 let Component = "CAS" in {
 
-def err_builtin_cas_cannot_be_initialized : Error<
-  "CAS cannot be initialized from '%0' on disk (check -fcas-path): %1">,
-  DefaultFatal;
-def err_plugin_cas_cannot_be_initialized : Error<
-  "plugin CAS cannot be initialized from '%0': %1">,
-  DefaultFatal;
-def err_builtin_actioncache_cannot_be_initialized : Error<
-  "ActionCache cannot be initialized from '%0' on disk (check -fcas-path)">,
+def err_cas_cannot_be_initialized : Error<
+  "CAS cannot be initialized from the specified '-fcas-*' options: %0">,
   DefaultFatal;
 def err_cas_cannot_parse_root_id : Error<
   "CAS cannot parse root-id '%0' specified by -fcas-fs">, DefaultFatal;
 def err_cas_filesystem_cannot_be_initialized : Error<
-  "CAS filesystem cannot be initialized from root-id '%0' specified by"
-  " -fcas-fs">, DefaultFatal;
+  "CAS filesystem cannot be initialized from root-id '%0': %1">, DefaultFatal;
 def err_cas_filesystem_cannot_set_working_directory : Error<
   "CAS filesystem cannot set working directory to '%0' specified by"
   " -fcas-fs-working-directory">, DefaultFatal;
@@ -40,6 +33,8 @@ def err_cas_cannot_parse_include_tree_id : Error<
   "CAS cannot parse include-tree-id '%0'">, DefaultFatal;
 def err_cas_missing_include_tree_id : Error<
   "CAS missing expected include-tree '%0'">, DefaultFatal;
+def err_cas_cannot_load_api_notes_include_tree : Error<
+  "cannot load APINotes from include-tree-id '%0'">, DefaultFatal;
 
 def warn_clang_cache_disabled_caching: Warning<
   "caching disabled because %0">,

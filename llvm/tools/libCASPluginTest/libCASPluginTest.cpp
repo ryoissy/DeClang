@@ -46,12 +46,35 @@ void llcas_string_dispose(char *str) { free(str); }
 
 namespace {
 
+struct CancellableState {
+  std::atomic<bool> Cancelled{false};
+};
+
+struct CancellableWrap {
+  std::shared_ptr<CancellableState> State;
+};
+
+DEFINE_SIMPLE_CONVERSION_FUNCTIONS(CancellableWrap, llcas_cancellable_t)
+
+} // namespace
+
+void llcas_cancellable_cancel(llcas_cancellable_t c_cancellable) {
+  unwrap(c_cancellable)->State->Cancelled = true;
+}
+
+void llcas_cancellable_dispose(llcas_cancellable_t c_cancellable) {
+  delete unwrap(c_cancellable);
+}
+
+namespace {
+
 struct CASPluginOptions {
   std::string OnDiskPath;
   std::string UpstreamPath;
   std::string FirstPrefix;
   std::string SecondPrefix;
   bool SimulateMissingObjects = false;
+  bool Logging = true;
 
   Error setOption(StringRef Name, StringRef Value);
 };
@@ -69,6 +92,8 @@ Error CASPluginOptions::setOption(StringRef Name, StringRef Value) {
     UpstreamPath = Value;
   else if (Name == "simulate-missing-objects")
     SimulateMissingObjects = true;
+  else if (Name == "no-logging")
+    Logging = false;
   else
     return createStringError(errc::invalid_argument,
                              Twine("unknown option: ") + Name);
@@ -104,6 +129,7 @@ struct CASWrapper {
   std::string SecondPrefix;
   /// If true, asynchronous "download" of an object will treat it as missing.
   bool SimulateMissingObjects = false;
+  bool Logging = true;
   std::unique_ptr<UnifiedOnDiskCache> DB;
   /// Used for testing the \c globally parameter of action cache APIs. Simulates
   /// "uploading"/"downloading" objects from/to the primary on-disk path.
@@ -112,32 +138,56 @@ struct CASWrapper {
 
   std::mutex Lock{};
 
+  /// Check if the object is contained, in the "local" CAS only or "globally".
+  bool containsObject(ObjectID ID, bool Globally);
+
   /// Load the object, potentially "downloading" it from upstream.
   Expected<std::optional<ondisk::ObjectHandle>> loadObject(ObjectID ID);
 
+  /// "Uploads" a key and the associated full node graph.
+  Error upstreamKey(ArrayRef<uint8_t> Key, ObjectID Value);
+
+  /// "Downloads" the ID associated with the key but not the node data. The node
+  /// itself and the rest of the nodes in the graph will be "downloaded" lazily
+  /// as they are visited.
+  Expected<std::optional<ObjectID>> downstreamKey(ArrayRef<uint8_t> Key);
+
+  /// Synchronized access to \c llvm::errs().
+  void syncErrs(llvm::function_ref<void(raw_ostream &OS)> Fn) {
+    if (!Logging) {
+      // Ignore log output.
+      SmallString<32> Buf;
+      raw_svector_ostream OS(Buf);
+      Fn(OS);
+      return;
+    }
+    std::unique_lock<std::mutex> LockGuard(Lock);
+    Fn(errs());
+    errs().flush();
+  }
+
+private:
   /// "Uploads" the full object node graph.
   Expected<ObjectID> upstreamNode(ObjectID Node);
   /// "Downloads" only a single object node. The rest of the nodes in the graph
   /// will be "downloaded" lazily as they are visited.
   Expected<ObjectID> downstreamNode(ObjectID Node);
-
-  /// "Uploads" a key the associated full node graph.
-  Error upstreamKey(ArrayRef<uint8_t> Key, ObjectID Value);
-  /// "Downloads" the single root node that is associated with the key. The rest
-  /// of the nodes in the graph will be "downloaded" lazily as they are visited.
-  Expected<std::optional<ObjectID>> downstreamKey(ArrayRef<uint8_t> Key);
-
-  /// Synchronized access to \c llvm::errs().
-  void syncErrs(llvm::function_ref<void(raw_ostream &OS)> Fn) {
-    std::unique_lock<std::mutex> LockGuard(Lock);
-    Fn(errs());
-    errs().flush();
-  }
 };
 
 DEFINE_SIMPLE_CONVERSION_FUNCTIONS(CASWrapper, llcas_cas_t)
 
 } // namespace
+
+bool CASWrapper::containsObject(ObjectID ID, bool Globally) {
+  if (DB->getGraphDB().containsObject(ID))
+    return true;
+  if (!Globally || !UpstreamDB)
+    return false;
+
+  ObjectID UpstreamID =
+      UpstreamDB->getGraphDB().getReference(DB->getGraphDB().getDigest(ID));
+  return UpstreamDB->getGraphDB().containsObject(UpstreamID);
+}
 
 Expected<std::optional<ondisk::ObjectHandle>>
 CASWrapper::loadObject(ObjectID ID) {
@@ -208,6 +258,8 @@ Expected<ObjectID> CASWrapper::downstreamNode(ObjectID Node) {
 }
 
 Error CASWrapper::upstreamKey(ArrayRef<uint8_t> Key, ObjectID Value) {
+  if (!UpstreamDB)
+    return Error::success();
   Expected<ObjectID> UpstreamVal = upstreamNode(Value);
   if (!UpstreamVal)
     return UpstreamVal.takeError();
@@ -220,21 +272,20 @@ Error CASWrapper::upstreamKey(ArrayRef<uint8_t> Key, ObjectID Value) {
 
 Expected<std::optional<ObjectID>>
 CASWrapper::downstreamKey(ArrayRef<uint8_t> Key) {
+  if (!UpstreamDB)
+    return std::nullopt;
   std::optional<ObjectID> UpstreamValue;
   if (Error E = UpstreamDB->KVGet(Key).moveInto(UpstreamValue))
     return std::move(E);
   if (!UpstreamValue)
     return std::nullopt;
 
-  Expected<ObjectID> Value = downstreamNode(*UpstreamValue);
-  if (!Value)
-    return Value.takeError();
-  assert(DB->getGraphDB().getDigest(*Value) ==
-         UpstreamDB->getGraphDB().getDigest(*UpstreamValue));
-  Expected<ObjectID> PutValue = DB->KVPut(Key, *Value);
+  ObjectID Value = DB->getGraphDB().getReference(
+      UpstreamDB->getGraphDB().getDigest(*UpstreamValue));
+  Expected<ObjectID> PutValue = DB->KVPut(Key, Value);
   if (!PutValue)
     return PutValue.takeError();
-  assert(*PutValue == *Value);
+  assert(*PutValue == Value);
   return PutValue;
 }
 
@@ -256,11 +307,38 @@ llcas_cas_t llcas_cas_create(llcas_cas_options_t c_opts, char **error) {
   }
 
   return wrap(new CASWrapper{Opts.FirstPrefix, Opts.SecondPrefix,
-                             Opts.SimulateMissingObjects, std::move(*DB),
-                             std::move(UpstreamDB)});
+                             Opts.SimulateMissingObjects, Opts.Logging,
+                             std::move(*DB), std::move(UpstreamDB)});
 }
 
 void llcas_cas_dispose(llcas_cas_t c_cas) { delete unwrap(c_cas); }
+
+int64_t llcas_cas_get_ondisk_size(llcas_cas_t c_cas, char **error) {
+  return unwrap(c_cas)->DB->getStorageSize();
+}
+
+bool llcas_cas_set_ondisk_size_limit(llcas_cas_t c_cas, int64_t size_limit,
+                                     char **error) {
+  std::optional<uint64_t> SizeLimit;
+  if (size_limit < 0) {
+    return reportError(
+        llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "invalid size limit passed to llcas_cas_set_ondisk_size_limit"),
+        error, true);
+  }
+  if (size_limit > 0) {
+    SizeLimit = size_limit;
+  }
+  unwrap(c_cas)->DB->setSizeLimit(SizeLimit);
+  return false;
+}
+
+bool llcas_cas_prune_ondisk_data(llcas_cas_t c_cas, char **error) {
+  if (Error E = unwrap(c_cas)->DB->collectGarbage())
+    return reportError(std::move(E), error, true);
+  return false;
+}
 
 void llcas_cas_options_set_client_version(llcas_cas_options_t, unsigned major,
                                           unsigned minor) {
@@ -324,11 +402,11 @@ llcas_digest_t llcas_objectid_get_digest(llcas_cas_t c_cas,
 
 llcas_lookup_result_t llcas_cas_contains_object(llcas_cas_t c_cas,
                                                 llcas_objectid_t c_id,
-                                                char **error) {
-  auto &CAS = unwrap(c_cas)->DB->getGraphDB();
+                                                bool globally, char **error) {
   ObjectID ID = ObjectID::fromOpaqueData(c_id.opaque);
-  return CAS.containsObject(ID) ? LLCAS_LOOKUP_RESULT_SUCCESS
-                                : LLCAS_LOOKUP_RESULT_NOTFOUND;
+  return unwrap(c_cas)->containsObject(ID, globally)
+             ? LLCAS_LOOKUP_RESULT_SUCCESS
+             : LLCAS_LOOKUP_RESULT_NOTFOUND;
 }
 
 llcas_lookup_result_t llcas_cas_load_object(llcas_cas_t c_cas,
@@ -349,7 +427,13 @@ llcas_lookup_result_t llcas_cas_load_object(llcas_cas_t c_cas,
 }
 
 void llcas_cas_load_object_async(llcas_cas_t c_cas, llcas_objectid_t c_id,
-                                 void *ctx_cb, llcas_cas_load_object_cb cb) {
+                                 void *ctx_cb, llcas_cas_load_object_cb cb,
+                                 llcas_cancellable_t *c_cancellable) {
+  auto CancelState = std::make_shared<CancellableState>();
+  if (c_cancellable) {
+    *c_cancellable = wrap(new CancellableWrap{CancelState});
+  }
+
   std::string PrintedDigest;
   {
     llcas_digest_t c_digest = llcas_objectid_get_digest(c_cas, c_id);
@@ -397,6 +481,12 @@ void llcas_cas_load_object_async(llcas_cas_t c_cas, llcas_objectid_t c_id,
     // Wait a bit for the caller to proceed.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     auto &Wrap = *unwrap(c_cas);
+    if (CancelState->Cancelled) {
+      Wrap.syncErrs([&](raw_ostream &OS) {
+        OS << "load_object_async cancelled: " << PrintedDigest << '\n';
+      });
+      return passObject(std::nullopt);
+    }
     Wrap.syncErrs([&](raw_ostream &OS) {
       OS << "load_object_async downstream end: " << PrintedDigest << '\n';
     });
@@ -485,6 +575,40 @@ llcas_actioncache_get_for_digest(llcas_cas_t c_cas, llcas_digest_t c_key,
   return LLCAS_LOOKUP_RESULT_SUCCESS;
 }
 
+void llcas_actioncache_get_for_digest_async(
+    llcas_cas_t c_cas, llcas_digest_t c_key, bool globally, void *ctx_cb,
+    llcas_actioncache_get_cb cb, llcas_cancellable_t *c_cancellable) {
+  auto CancelState = std::make_shared<CancellableState>();
+  if (c_cancellable) {
+    *c_cancellable = wrap(new CancellableWrap{CancelState});
+  }
+  bool IsCancellable = c_cancellable != nullptr;
+
+  ArrayRef Key(c_key.data, c_key.size);
+  SmallVector<uint8_t, 32> KeyBuf(Key);
+
+  unwrap(c_cas)->Pool.async([=] {
+    if (IsCancellable) {
+      // Wait a bit for the caller to have a chance to cancel.
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    auto &Wrap = *unwrap(c_cas);
+    if (CancelState->Cancelled) {
+      Wrap.syncErrs([&](raw_ostream &OS) {
+        OS << "actioncache_get_for_digest_async cancelled\n";
+      });
+      return cb(ctx_cb, LLCAS_LOOKUP_RESULT_NOTFOUND, llcas_objectid_t(),
+                nullptr);
+    }
+    llcas_objectid_t c_value;
+    char *c_err;
+    llcas_lookup_result_t result = llcas_actioncache_get_for_digest(
+        c_cas, llcas_digest_t{KeyBuf.data(), KeyBuf.size()}, &c_value, globally,
+        &c_err);
+    cb(ctx_cb, result, c_value, c_err);
+  });
+}
+
 bool llcas_actioncache_put_for_digest(llcas_cas_t c_cas, llcas_digest_t c_key,
                                       llcas_objectid_t c_value, bool globally,
                                       char **error) {
@@ -506,4 +630,37 @@ bool llcas_actioncache_put_for_digest(llcas_cas_t c_cas, llcas_digest_t c_key,
   }
 
   return false;
+}
+
+void llcas_actioncache_put_for_digest_async(
+    llcas_cas_t c_cas, llcas_digest_t c_key, llcas_objectid_t c_value,
+    bool globally, void *ctx_cb, llcas_actioncache_put_cb cb,
+    llcas_cancellable_t *c_cancellable) {
+  auto CancelState = std::make_shared<CancellableState>();
+  if (c_cancellable) {
+    *c_cancellable = wrap(new CancellableWrap{CancelState});
+  }
+  bool IsCancellable = c_cancellable != nullptr;
+
+  ArrayRef Key(c_key.data, c_key.size);
+  SmallVector<uint8_t, 32> KeyBuf(Key);
+
+  unwrap(c_cas)->Pool.async([=] {
+    if (IsCancellable) {
+      // Wait a bit for the caller to have a chance to cancel.
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    auto &Wrap = *unwrap(c_cas);
+    if (CancelState->Cancelled) {
+      Wrap.syncErrs([&](raw_ostream &OS) {
+        OS << "actioncache_put_for_digest_async cancelled\n";
+      });
+      return cb(ctx_cb, false, nullptr);
+    }
+    char *c_err;
+    bool failed = llcas_actioncache_put_for_digest(
+        c_cas, llcas_digest_t{KeyBuf.data(), KeyBuf.size()}, c_value, globally,
+        &c_err);
+    cb(ctx_cb, failed, c_err);
+  });
 }

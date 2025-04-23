@@ -22,6 +22,7 @@
 #include "ScriptInterpreterPythonImpl.h"
 #include "ScriptedProcessPythonInterface.h"
 #include "ScriptedThreadPythonInterface.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -47,7 +48,7 @@ StructuredData::GenericSP ScriptedProcessPythonInterface::CreatePluginObject(
   lldb::ExecutionContextRefSP exe_ctx_ref_sp =
       std::make_shared<ExecutionContextRef>(exe_ctx);
 
-  PythonObject ret_val = LLDBSwigPythonCreateScriptedObject(
+  PythonObject ret_val = SWIGBridge::LLDBSwigPythonCreateScriptedObject(
       class_name.str().c_str(), m_interpreter.GetDictionaryName(),
       exe_ctx_ref_sp, args_impl, error_string);
 
@@ -84,10 +85,10 @@ Status ScriptedProcessPythonInterface::Resume() {
   return GetStatusFromMethod("resume", /*should_stop=*/true);
 }
 
-llvm::Optional<MemoryRegionInfo>
+std::optional<MemoryRegionInfo>
 ScriptedProcessPythonInterface::GetMemoryRegionContainingAddress(
     lldb::addr_t address, Status &error) {
-  auto mem_region = Dispatch<llvm::Optional<MemoryRegionInfo>>(
+  auto mem_region = Dispatch<std::optional<MemoryRegionInfo>>(
       "get_memory_region_containing_address", error, address);
 
   if (error.Fail()) {
@@ -138,7 +139,7 @@ lldb::DataExtractorSP ScriptedProcessPythonInterface::ReadMemoryAtAddress(
   return data_sp;
 }
 
-size_t ScriptedProcessPythonInterface::WriteMemoryAtAddress(
+lldb::offset_t ScriptedProcessPythonInterface::WriteMemoryAtAddress(
     lldb::addr_t addr, lldb::DataExtractorSP data_sp, Status &error) {
   Status py_error;
   StructuredData::ObjectSP obj =
@@ -151,7 +152,7 @@ size_t ScriptedProcessPythonInterface::WriteMemoryAtAddress(
   if (py_error.Fail())
     error = py_error;
 
-  return obj->GetIntegerValue(LLDB_INVALID_OFFSET);
+  return obj->GetUnsignedIntegerValue(LLDB_INVALID_OFFSET);
 }
 
 StructuredData::ArraySP ScriptedProcessPythonInterface::GetLoadedImages() {
@@ -172,7 +173,7 @@ lldb::pid_t ScriptedProcessPythonInterface::GetProcessID() {
   if (!CheckStructuredDataObject(LLVM_PRETTY_FUNCTION, obj, error))
     return LLDB_INVALID_PROCESS_ID;
 
-  return obj->GetIntegerValue(LLDB_INVALID_PROCESS_ID);
+  return obj->GetUnsignedIntegerValue(LLDB_INVALID_PROCESS_ID);
 }
 
 bool ScriptedProcessPythonInterface::IsAlive() {
@@ -185,7 +186,7 @@ bool ScriptedProcessPythonInterface::IsAlive() {
   return obj->GetBooleanValue();
 }
 
-llvm::Optional<std::string>
+std::optional<std::string>
 ScriptedProcessPythonInterface::GetScriptedThreadPluginName() {
   Status error;
   StructuredData::ObjectSP obj = Dispatch("get_scripted_thread_plugin", error);

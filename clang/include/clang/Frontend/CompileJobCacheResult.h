@@ -55,8 +55,10 @@ public:
 
   size_t getNumOutputs() const;
 
+  Output getOutput(size_t I) const;
+
   /// Retrieves a specific output specified by \p Kind, if it exists.
-  Optional<Output> getOutput(OutputKind Kind) const;
+  std::optional<Output> getOutput(OutputKind Kind) const;
 
   /// \returns a string for the given \p Kind.
   static StringRef getOutputKindName(OutputKind Kind);

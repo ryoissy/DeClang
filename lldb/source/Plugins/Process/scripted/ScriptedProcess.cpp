@@ -42,7 +42,7 @@ static constexpr lldb::ScriptLanguage g_supported_script_languages[] = {
 
 bool ScriptedProcess::IsScriptLanguageSupported(lldb::ScriptLanguage language) {
   llvm::ArrayRef<lldb::ScriptLanguage> supported_languages =
-      llvm::makeArrayRef(g_supported_script_languages);
+      llvm::ArrayRef(g_supported_script_languages);
 
   return llvm::is_contained(supported_languages, language);
 }
@@ -235,7 +235,7 @@ size_t ScriptedProcess::DoWriteMemory(lldb::addr_t vm_addr, const void *buf,
   if (!data_extractor_sp || !data_extractor_sp->GetByteSize())
     return 0;
 
-  size_t bytes_written =
+  lldb::offset_t bytes_written =
       GetInterface().WriteMemoryAtAddress(vm_addr, data_extractor_sp, error);
 
   if (!bytes_written || bytes_written == LLDB_INVALID_OFFSET)
@@ -456,7 +456,7 @@ ScriptedProcess::GetLoadedDynamicLibrariesInfos() {
       return error_with_message("Couldn't create or get module.");
 
     lldb::addr_t load_addr = LLDB_INVALID_ADDRESS;
-    lldb::addr_t slide = LLDB_INVALID_OFFSET;
+    lldb::offset_t slide = LLDB_INVALID_OFFSET;
     dict->GetValueForKeyAsInteger("load_addr", load_addr);
     dict->GetValueForKeyAsInteger("slide", slide);
     if (load_addr == LLDB_INVALID_ADDRESS)

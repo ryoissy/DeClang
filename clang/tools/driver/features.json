@@ -19,6 +19,12 @@
       "name": "depscan-prefix-map"
     },
     {
+      "name": "libclang-cache-queries"
+    },
+    {
+      "name": "Wsystem-headers-in-module"
+    },
+    {
       "name": "deployment-target-environment-variables",
       "value": [
         "MACOSX_DEPLOYMENT_TARGET",
@@ -28,6 +34,12 @@
         "BRIDGEOS_DEPLOYMENT_TARGET",
         "DRIVERKIT_DEPLOYMENT_TARGET"
       ]
+    },
+    {
+      "name": "resource-dir-uses-major-version-only"
+    },
+    {
+      "name": "extract-api-supports-cpp"
     }
   ]
 }

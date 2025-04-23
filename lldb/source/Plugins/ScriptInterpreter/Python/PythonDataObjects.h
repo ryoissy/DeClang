@@ -194,6 +194,8 @@ template <typename T, char F> struct PassthroughFormat {
 };
 
 template <> struct PythonFormat<char *> : PassthroughFormat<char *, 's'> {};
+template <> struct PythonFormat<const char *> : 
+    PassthroughFormat<const char *, 's'> {};
 template <> struct PythonFormat<char> : PassthroughFormat<char, 'b'> {};
 template <>
 struct PythonFormat<unsigned char> : PassthroughFormat<unsigned char, 'B'> {};
@@ -363,7 +365,7 @@ public:
 
   llvm::Expected<long long> AsLongLong() const;
 
-  llvm::Expected<long long> AsUnsignedLongLong() const;
+  llvm::Expected<unsigned long long> AsUnsignedLongLong() const;
 
   // wraps on overflow, instead of raising an error.
   llvm::Expected<unsigned long long> AsModuloUnsignedLongLong() const;
@@ -489,6 +491,10 @@ public:
   void SetInteger(int64_t value);
 
   StructuredData::IntegerSP CreateStructuredInteger() const;
+
+  StructuredData::UnsignedIntegerSP CreateStructuredUnsignedInteger() const;
+
+  StructuredData::SignedIntegerSP CreateStructuredSignedInteger() const;
 };
 
 class PythonBoolean : public TypedPythonObject<PythonBoolean> {

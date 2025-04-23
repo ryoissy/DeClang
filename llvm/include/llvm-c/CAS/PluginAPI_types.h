@@ -24,6 +24,7 @@
 
 typedef struct llcas_cas_options_s *llcas_cas_options_t;
 typedef struct llcas_cas_s *llcas_cas_t;
+typedef struct llcas_cancellable_s *llcas_cancellable_t;
 
 /**
  * Digest hash bytes.
@@ -93,5 +94,26 @@ typedef enum {
  */
 typedef void (*llcas_cas_load_object_cb)(void *ctx, llcas_lookup_result_t,
                                          llcas_loaded_object_t, char *error);
+
+/**
+ * Callback for \c llcas_actioncache_get_for_digest_async.
+ *
+ * \param ctx pointer passed through from the
+ * \c llcas_actioncache_get_for_digest_async call.
+ * \param error message if an error occurred. If set, the memory it points to
+ * needs to be released via \c llcas_string_dispose.
+ */
+typedef void (*llcas_actioncache_get_cb)(void *ctx, llcas_lookup_result_t,
+                                         llcas_objectid_t, char *error);
+
+/**
+ * Callback for \c llcas_actioncache_put_for_digest_async.
+ *
+ * \param ctx pointer passed through from the
+ * \c llcas_actioncache_put_for_digest_async call.
+ * \param error message if an error occurred. If set, the memory it points to
+ * needs to be released via \c llcas_string_dispose.
+ */
+typedef void (*llcas_actioncache_put_cb)(void *ctx, bool failed, char *error);
 
 #endif /* LLVM_C_CAS_PLUGINAPI_TYPES_H */

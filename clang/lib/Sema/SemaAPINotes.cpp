@@ -133,8 +133,9 @@ static StringRef CopyString(ASTContext &ctx, StringRef string) {
 static AttributeCommonInfo getDummyAttrInfo() {
   return AttributeCommonInfo(SourceRange(),
                              AttributeCommonInfo::UnknownAttribute,
-                             AttributeCommonInfo::AS_GNU,
-                             /*Spelling*/0);
+                             {AttributeCommonInfo::AS_GNU,
+                              /*Spelling*/ 0, /*IsAlignas*/ false,
+                              /*IsRegularKeywordAttribute*/ false});
 }
 
 namespace {
@@ -232,7 +233,7 @@ static void handleAPINotedRetainCountAttribute(Sema &S, Decl *D,
 
 static void handleAPINotedRetainCountConvention(
     Sema &S, Decl *D, VersionedInfoMetadata metadata,
-    Optional<api_notes::RetainCountConventionKind> convention) {
+    std::optional<api_notes::RetainCountConventionKind> convention) {
   if (!convention)
     return;
   switch (*convention) {
@@ -320,7 +321,7 @@ static void ProcessAPINotes(Sema &S, Decl *D,
       auto &C = S.getASTContext();
       ParsedAttr *SNA = AP.create(&C.Idents.get("swift_name"), SourceRange(),
                                   nullptr, SourceLocation(), nullptr, nullptr,
-                                  nullptr, ParsedAttr::AS_GNU);
+                                  nullptr, ParsedAttr::Form::GNU());
 
       if (!S.DiagnoseSwiftName(D, info.SwiftName, D->getLocation(), *SNA, /*IsAsync=*/false)) {
         return nullptr;
@@ -627,6 +628,22 @@ static void ProcessAPINotes(Sema &S, ObjCMethodDecl *D,
 static void ProcessAPINotes(Sema &S, TagDecl *D,
                             const api_notes::TagInfo &info,
                             VersionedInfoMetadata metadata) {
+  if (auto ImportAs = info.SwiftImportAs) {
+    auto str = "import_" + ImportAs.value();
+    auto attr = SwiftAttrAttr::Create(S.Context, str);
+    D->addAttr(attr);
+  }
+  if (auto RetainOp = info.SwiftRetainOp) {
+    auto str = "retain:" + RetainOp.value();
+    auto attr = SwiftAttrAttr::Create(S.Context, str);
+    D->addAttr(attr);
+  }
+  if (auto ReleaseOp = info.SwiftReleaseOp) {
+    auto str = "release:" + ReleaseOp.value();
+    auto attr = SwiftAttrAttr::Create(S.Context, str);
+    D->addAttr(attr);
+  }
+
   if (auto extensibility = info.EnumExtensibility) {
     using api_notes::EnumExtensibilityKind;
     bool shouldAddAttribute = (*extensibility != EnumExtensibilityKind::None);
@@ -685,10 +702,11 @@ static void ProcessAPINotes(Sema &S, TypedefNameDecl *D,
           kind = SwiftNewTypeAttr::NK_Enum;
           break;
         }
-        AttributeCommonInfo syntaxInfo{SourceRange(),
-                                       AttributeCommonInfo::AT_SwiftNewType,
-                                       AttributeCommonInfo::AS_GNU,
-                                       SwiftNewTypeAttr::GNU_swift_wrapper};
+        AttributeCommonInfo syntaxInfo{
+            SourceRange(),
+            AttributeCommonInfo::AT_SwiftNewType,
+            {AttributeCommonInfo::AS_GNU, SwiftNewTypeAttr::GNU_swift_wrapper,
+             /*IsAlignas*/ false, /*IsRegularKeywordAttribute*/ false}};
         return new (S.Context) SwiftNewTypeAttr(S.Context, syntaxInfo, kind);
     });
   }
@@ -812,11 +830,43 @@ void Sema::ProcessAPINotes(Decl *D) {
 
   // Globals.
   if (D->getDeclContext()->isFileContext() ||
-      D->getDeclContext()->isExternCContext()) {
+      D->getDeclContext()->isNamespace() ||
+      D->getDeclContext()->isExternCContext() ||
+      D->getDeclContext()->isExternCXXContext()) {
+    std::optional<api_notes::Context> APINotesContext;
+    if (auto NamespaceContext = dyn_cast<NamespaceDecl>(D->getDeclContext())) {
+      for (auto Reader :
+           APINotes.findAPINotes(NamespaceContext->getLocation())) {
+        // Retrieve the context ID for the parent namespace of the decl.
+        std::stack<NamespaceDecl *> NamespaceStack;
+        {
+          for (auto CurrentNamespace = NamespaceContext; CurrentNamespace;
+               CurrentNamespace =
+                   dyn_cast<NamespaceDecl>(CurrentNamespace->getParent())) {
+            if (!CurrentNamespace->isInlineNamespace())
+              NamespaceStack.push(CurrentNamespace);
+          }
+        }
+        std::optional<api_notes::ContextID> NamespaceID;
+        while (!NamespaceStack.empty()) {
+          auto CurrentNamespace = NamespaceStack.top();
+          NamespaceStack.pop();
+          NamespaceID = Reader->lookupNamespaceID(CurrentNamespace->getName(),
+                                                  NamespaceID);
+          if (!NamespaceID)
+            break;
+        }
+        if (NamespaceID)
+          APINotesContext = api_notes::Context(
+              *NamespaceID, api_notes::ContextKind::Namespace);
+      }
+    }
+
     // Global variables.
     if (auto VD = dyn_cast<VarDecl>(D)) {
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info = Reader->lookupGlobalVariable(VD->getName());
+        auto Info =
+            Reader->lookupGlobalVariable(VD->getName(), APINotesContext);
         ProcessVersionedAPINotes(*this, VD, Info);
       }
 
@@ -827,7 +877,8 @@ void Sema::ProcessAPINotes(Decl *D) {
     if (auto FD = dyn_cast<FunctionDecl>(D)) {
       if (FD->getDeclName().isIdentifier()) {
         for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-          auto Info = Reader->lookupGlobalFunction(FD->getName());
+          auto Info =
+              Reader->lookupGlobalFunction(FD->getName(), APINotesContext);
           ProcessVersionedAPINotes(*this, FD, Info);
         }
       }
@@ -857,7 +908,15 @@ void Sema::ProcessAPINotes(Decl *D) {
 
     // Tags
     if (auto Tag = dyn_cast<TagDecl>(D)) {
-      std::string LookupName = Tag->getName().str();
+      // Determine the name of the entity to search for. If this is an
+      // anonymous tag that gets its linked name from a typedef, look for the
+      // typedef name. This allows tag-specific information to be added
+      // to the declaration.
+      std::string LookupName;
+      if (auto typedefName = Tag->getTypedefNameForAnonDecl())
+        LookupName = typedefName->getName().str();
+      else
+        LookupName = Tag->getName().str();
 
       // Use the source location to discern if this Tag is an OPTIONS macro.
       // For now we would like to limit this trick of looking up the APINote tag
@@ -882,7 +941,7 @@ void Sema::ProcessAPINotes(Decl *D) {
       }
 
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info = Reader->lookupTag(LookupName);
+        auto Info = Reader->lookupTag(LookupName, APINotesContext);
         ProcessVersionedAPINotes(*this, Tag, Info);
       }
 
@@ -892,7 +951,7 @@ void Sema::ProcessAPINotes(Decl *D) {
     // Typedefs
     if (auto Typedef = dyn_cast<TypedefNameDecl>(D)) {
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info = Reader->lookupTypedef(Typedef->getName());
+        auto Info = Reader->lookupTypedef(Typedef->getName(), APINotesContext);
         ProcessVersionedAPINotes(*this, Typedef, Info);
       }
 
@@ -916,44 +975,44 @@ void Sema::ProcessAPINotes(Decl *D) {
   if (auto ObjCContainer = dyn_cast<ObjCContainerDecl>(D->getDeclContext())) {
     // Location function that looks up an Objective-C context.
     auto GetContext = [&](api_notes::APINotesReader *Reader)
-                        -> Optional<api_notes::ContextID> {
+        -> std::optional<api_notes::ContextID> {
       if (auto Protocol = dyn_cast<ObjCProtocolDecl>(ObjCContainer)) {
         if (auto Found = Reader->lookupObjCProtocolID(Protocol->getName()))
           return *Found;
 
-        return None;
+        return std::nullopt;
       }
 
       if (auto Impl = dyn_cast<ObjCCategoryImplDecl>(ObjCContainer)) {
         if (auto Cat = Impl->getCategoryDecl())
           ObjCContainer = Cat;
         else
-          return None;
+          return std::nullopt;
       }
 
       if (auto Category = dyn_cast<ObjCCategoryDecl>(ObjCContainer)) {
         if (Category->getClassInterface())
           ObjCContainer = Category->getClassInterface();
         else
-          return None;
+          return std::nullopt;
       }
 
       if (auto Impl = dyn_cast<ObjCImplDecl>(ObjCContainer)) {
         if (Impl->getClassInterface())
           ObjCContainer = Impl->getClassInterface();
         else
-          return None;
+          return std::nullopt;
       }
 
       if (auto Class = dyn_cast<ObjCInterfaceDecl>(ObjCContainer)) {
         if (auto Found = Reader->lookupObjCClassID(Class->getName()))
           return *Found;
 
-        return None;
+        return std::nullopt;
 
       }
 
-      return None;
+      return std::nullopt;
     };
 
     // Objective-C methods.

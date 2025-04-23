@@ -10,13 +10,6 @@ if (CXX_SUPPORTS_SUGGEST_OVERRIDE_FLAG)
   add_compile_options("-Wno-suggest-override")
 endif()
 
-set(LLDB_GTEST_COMMON_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/gtest_common.h)
-if (MSVC)
-  list(APPEND LLVM_COMPILE_FLAGS /FI ${LLDB_GTEST_COMMON_INCLUDE})
-else ()
-  list(APPEND LLVM_COMPILE_FLAGS -include ${LLDB_GTEST_COMMON_INCLUDE})
-endif ()
-
 function(add_lldb_unittest test_name)
   cmake_parse_arguments(ARG
     ""
@@ -43,7 +36,7 @@ function(add_lldb_unittest test_name)
   target_link_libraries(${test_name} PRIVATE ${ARG_LINK_LIBS})
 
   # BEGIN Swift Mods
-  if(SWIFT_SWIFT_PARSER)
+  if(SWIFT_BUILD_SWIFT_SYNTAX)
     add_properties_for_swift_modules(${test_name} "../")
   endif()
 # END Swift Mods
@@ -65,6 +58,7 @@ if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
   add_subdirectory(API)
 endif()
 add_subdirectory(Breakpoint)
+add_subdirectory(Callback)
 add_subdirectory(Core)
 add_subdirectory(DataFormatter)
 add_subdirectory(Disassembler)
@@ -81,6 +75,7 @@ add_subdirectory(ScriptInterpreter)
 add_subdirectory(Signals)
 add_subdirectory(Symbol)
 add_subdirectory(SymbolFile)
+add_subdirectory(TypeSystem)
 add_subdirectory(Target)
 add_subdirectory(tools)
 add_subdirectory(UnwindAssembly)

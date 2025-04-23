@@ -74,6 +74,11 @@ typedef struct {
 
   /**
    * The canonical command line to build this module.
+   *
+   * If getFileDependencies_v3 or later was used to get this dependency, it is
+   * a complete command line. When using getFileDependencies_v2, it excludes
+   * arguments containing modules-related paths:
+   * "-fmodule-file=", "-o", "-fmodule-map-file=".
    */
   CXStringSet *BuildArguments;
 } CXModuleDependency;
@@ -182,7 +187,7 @@ typedef struct CXOpaqueDependencyScannerServiceOptions
  * clang_experimental_DependencyScannerServiceOptions_dispose.
  */
 CINDEX_LINKAGE CXDependencyScannerServiceOptions
-clang_experimental_DependencyScannerServiceOptions_create();
+clang_experimental_DependencyScannerServiceOptions_create(void);
 
 /**
  * Dispose of a \c CXDependencyScannerServiceOptions object.
@@ -204,6 +209,14 @@ clang_experimental_DependencyScannerServiceOptions_setDependencyMode(
 CINDEX_LINKAGE void
 clang_experimental_DependencyScannerServiceOptions_setCASDatabases(
     CXDependencyScannerServiceOptions Opts, CXCASDatabases);
+
+/**
+ * Specify the specific CAS options for the scanner to use for the produced
+ * compiler arguments.
+ */
+CINDEX_LINKAGE void
+clang_experimental_DependencyScannerServiceOptions_setCASOptions(
+    CXDependencyScannerServiceOptions Opts, CXCASOptions);
 
 /**
  * Specify a \c CXCASObjectStore in the given options. If an object store and
@@ -295,7 +308,7 @@ typedef void CXModuleDiscoveredCallback(void *Context,
  * \param ContextHash the context hash of the dependent module.
  *                    See \c CXModuleDependency::ContextHash.
  & \param OutputKind the kind of module output to lookup.
- * \param Output[out] the output path(s) or name, whose total size must be <=
+ * \param[out] Output the output path(s) or name, whose total size must be <=
  *                    \p MaxLen. In the case of multiple outputs of the same
  *                    kind, this can be a null-separated list.
  * \param MaxLen the maximum size of Output.
@@ -308,6 +321,18 @@ typedef size_t CXModuleLookupOutputCallback(void *Context,
                                             const char *ContextHash,
                                             CXOutputKind OutputKind,
                                             char *Output, size_t MaxLen);
+
+/**
+ * Deprecated, use \c clang_experimental_DependencyScannerWorker_getDepGraph.
+ *
+ * See \c clang_experimental_DependencyScannerWorker_getFileDependencies_v4.
+ */
+CINDEX_LINKAGE CXFileDependencies *
+clang_experimental_DependencyScannerWorker_getFileDependencies_v3(
+    CXDependencyScannerWorker Worker, int argc, const char *const *argv,
+    const char *ModuleName, const char *WorkingDirectory, void *MDCContext,
+    CXModuleDiscoveredCallback *MDC, void *MLOContext,
+    CXModuleLookupOutputCallback *MLO, unsigned Options, CXString *error);
 
 /**
  * Deprecated, use \c clang_experimental_DependencyScannerWorker_getDepGraph.
@@ -526,7 +551,19 @@ CINDEX_LINKAGE CXCStringArray
     clang_experimental_DepGraphModule_getBuildArguments(CXDepGraphModule);
 
 /**
+ * @returns the CASID of the include-tree for this module, if any.
+ *
+ * The string is only valid to use while the \c CXDepGraphModule object is
+ * valid.
+ */
+CINDEX_LINKAGE const char *
+    clang_experimental_DepGraphModule_getIncludeTreeID(CXDepGraphModule);
+
+/**
  * \returns the \c ActionCache key for this module, if any.
+ *
+ * The string is only valid to use while the \c CXDepGraphModule object is
+ * valid.
  */
 CINDEX_LINKAGE
 const char *clang_experimental_DepGraphModule_getCacheKey(CXDepGraphModule);
@@ -571,6 +608,9 @@ CINDEX_LINKAGE CXCStringArray
 
 /**
  * \returns the \c ActionCache key for this translation unit, if any.
+ *
+ * The string is only valid to use while the \c CXDepGraphTUCommand object is
+ * valid.
  */
 CINDEX_LINKAGE const char *
     clang_experimental_DepGraphTUCommand_getCacheKey(CXDepGraphTUCommand);
@@ -593,6 +633,14 @@ CXCStringArray clang_experimental_DepGraph_getTUFileDeps(CXDepGraph);
  */
 CINDEX_LINKAGE
 CXCStringArray clang_experimental_DepGraph_getTUModuleDeps(CXDepGraph);
+
+/**
+ * @returns the CASID of the include-tree for this TU, if any.
+ *
+ * The string is only valid to use while the \c CXDepGraph object is valid.
+ */
+CINDEX_LINKAGE
+const char *clang_experimental_DepGraph_getTUIncludeTreeID(CXDepGraph);
 
 /**
  * \returns the context hash of the C++20 module this translation unit exports.

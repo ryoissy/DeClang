@@ -18,6 +18,7 @@
 #include "SWIGPythonBridge.h"
 #include "ScriptInterpreterPythonImpl.h"
 #include "ScriptedThreadPythonInterface.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -45,7 +46,7 @@ StructuredData::GenericSP ScriptedThreadPythonInterface::CreatePluginObject(
   if (!script_obj) {
     lldb::ExecutionContextRefSP exe_ctx_ref_sp =
         std::make_shared<ExecutionContextRef>(exe_ctx);
-    ret_val = LLDBSwigPythonCreateScriptedObject(
+    ret_val = SWIGBridge::LLDBSwigPythonCreateScriptedObject(
         class_name.str().c_str(), m_interpreter.GetDictionaryName(),
         exe_ctx_ref_sp, args_impl, error_string);
   } else
@@ -68,10 +69,10 @@ lldb::tid_t ScriptedThreadPythonInterface::GetThreadID() {
   if (!CheckStructuredDataObject(LLVM_PRETTY_FUNCTION, obj, error))
     return LLDB_INVALID_THREAD_ID;
 
-  return obj->GetIntegerValue(LLDB_INVALID_THREAD_ID);
+  return obj->GetUnsignedIntegerValue(LLDB_INVALID_THREAD_ID);
 }
 
-llvm::Optional<std::string> ScriptedThreadPythonInterface::GetName() {
+std::optional<std::string> ScriptedThreadPythonInterface::GetName() {
   Status error;
   StructuredData::ObjectSP obj = Dispatch("get_name", error);
 
@@ -88,10 +89,10 @@ lldb::StateType ScriptedThreadPythonInterface::GetState() {
   if (!CheckStructuredDataObject(LLVM_PRETTY_FUNCTION, obj, error))
     return eStateInvalid;
 
-  return static_cast<StateType>(obj->GetIntegerValue(eStateInvalid));
+  return static_cast<StateType>(obj->GetUnsignedIntegerValue(eStateInvalid));
 }
 
-llvm::Optional<std::string> ScriptedThreadPythonInterface::GetQueue() {
+std::optional<std::string> ScriptedThreadPythonInterface::GetQueue() {
   Status error;
   StructuredData::ObjectSP obj = Dispatch("get_queue", error);
 
@@ -134,8 +135,7 @@ StructuredData::DictionarySP ScriptedThreadPythonInterface::GetRegisterInfo() {
   return dict;
 }
 
-llvm::Optional<std::string>
-ScriptedThreadPythonInterface::GetRegisterContext() {
+std::optional<std::string> ScriptedThreadPythonInterface::GetRegisterContext() {
   Status error;
   StructuredData::ObjectSP obj = Dispatch("get_register_context", error);
 

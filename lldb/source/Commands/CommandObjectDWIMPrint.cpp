@@ -25,7 +25,6 @@
 #include "lldb/lldb-forward.h"
 #include "lldb/lldb-types.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/FormatVariadic.h"
 
 #include <regex>
 
@@ -60,7 +59,7 @@ void CommandObjectDWIMPrint::HandleArgumentCompletion(
       GetCommandInterpreter(), lldb::eVariablePathCompletion, request, nullptr);
 }
 
-bool CommandObjectDWIMPrint::DoExecute(StringRef command,
+void CommandObjectDWIMPrint::DoExecute(StringRef command,
                                        CommandReturnObject &result) {
   m_option_group.NotifyOptionParsingStarting(&m_exe_ctx);
   OptionsWithRaw args{command};
@@ -69,13 +68,13 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
   if (expr.empty()) {
     result.AppendErrorWithFormatv("'{0}' takes a variable or expression",
                                   m_cmd_name);
-    return false;
+    return;
   }
 
   if (args.HasArgs()) {
     if (!ParseOptionsAndNotify(args.GetArgs(), result, m_option_group,
                                m_exe_ctx))
-      return false;
+      return;
   }
 
   // If the user has not specified, default to disabling persistent results.
@@ -99,17 +98,14 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
       m_expr_options.m_verbosity, m_format_options.GetFormat());
   dump_options.SetHideRootName(suppress_result);
 
+  bool is_po = m_varobj_options.use_objc;
+
   StackFrame *frame = m_exe_ctx.GetFramePtr();
 
-  // BEGIN SWIFT
-  bool is_po = m_varobj_options.use_objc;
   // Either the language was explicitly specified, or we check the frame.
-  lldb::LanguageType language;
-  if (m_expr_options.language != lldb::eLanguageTypeUnknown)
-    language = m_expr_options.language;
-  else if (frame) 
-    language = frame->GuessLanguage();
-  // END SWIFT
+  lldb::LanguageType language = m_expr_options.language;
+  if (language == lldb::eLanguageTypeUnknown && frame)
+    language = frame->GuessLanguage().AsLanguageType();
   
   // Add a hint if object description was requested, but no description
   // function was implemented.
@@ -142,6 +138,28 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
     }
   };
 
+  // Dump `valobj` according to whether `po` was requested or not.
+  auto dump_val_object = [&](ValueObject &valobj) {
+    if (is_po) {
+      StreamString temp_result_stream;
+      if (llvm::Error error = valobj.Dump(temp_result_stream, dump_options)) {
+        result.AppendError(toString(std::move(error)));
+        return;
+      }
+      llvm::StringRef output = temp_result_stream.GetString();
+      maybe_add_hint(output);
+      result.GetOutputStream() << output;
+    } else {
+      llvm::Error error =
+        valobj.Dump(result.GetOutputStream(), dump_options);
+      if (error) {
+        result.AppendError(toString(std::move(error)));
+        return;
+      }
+    }
+    result.SetStatus(eReturnStatusSuccessFinishResult);
+  };
+
   // First, try `expr` as the name of a frame variable.
   if (frame) {
     auto valobj_sp = frame->FindVariable(ConstString(expr));
@@ -159,17 +177,8 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
                                         flags, expr);
       }
 
-      if (is_po) {
-        StreamString temp_result_stream;
-        valobj_sp->Dump(temp_result_stream, dump_options);
-        llvm::StringRef output = temp_result_stream.GetString();
-        maybe_add_hint(output);
-        result.GetOutputStream() << output;
-      } else {
-        valobj_sp->Dump(result.GetOutputStream(), dump_options);
-      }
-      result.SetStatus(eReturnStatusSuccessFinishResult);
-      return true;
+      dump_val_object(*valobj_sp);
+      return;
     }
   }
 
@@ -210,51 +219,62 @@ bool CommandObjectDWIMPrint::DoExecute(StringRef command,
   }
   // END SWIFT
 
-  // Second, also lastly, try `expr` as a source expression to evaluate.
+  // Second, try `expr` as a persistent variable.
+  if (expr.starts_with("$"))
+    if (auto *state = target.GetPersistentExpressionStateForLanguage(language))
+      if (auto var_sp = state->GetVariable(expr))
+        if (auto valobj_sp = var_sp->GetValueObject()) {
+          dump_val_object(*valobj_sp);
+          return;
+        }
+
+  // Third, and lastly, try `expr` as a source expression to evaluate.
   {
     auto *exe_scope = m_exe_ctx.GetBestExecutionContextScope();
     ValueObjectSP valobj_sp;
-    ExpressionResults expr_result =
-        target.EvaluateExpression(expr, exe_scope, valobj_sp, eval_options);
-    if (expr_result == eExpressionCompleted) {
-      if (verbosity != eDWIMPrintVerbosityNone) {
-        StringRef flags;
-        if (args.HasArgs())
-          flags = args.GetArgStringWithDelimiter();
-        result.AppendMessageWithFormatv("note: ran `expression {0}{1}`", flags,
-                                        expr);
-      }
+    std::string fixed_expression;
 
-      if (valobj_sp->GetError().GetError() != UserExpression::kNoResult) {
-        if (is_po) {
-          StreamString temp_result_stream;
-          valobj_sp->Dump(temp_result_stream, dump_options);
-          llvm::StringRef output = temp_result_stream.GetString();
-          maybe_add_hint(output);
-          result.GetOutputStream() << output;
-        } else {
-          valobj_sp->Dump(result.GetOutputStream(), dump_options);
-        }
-      }
+    ExpressionResults expr_result = target.EvaluateExpression(
+        expr, exe_scope, valobj_sp, eval_options, &fixed_expression);
 
-      if (suppress_result)
-        if (auto result_var_sp =
-                target.GetPersistentVariable(valobj_sp->GetName())) {
-          auto language = valobj_sp->GetPreferredDisplayLanguage();
-          if (auto *persistent_state =
-                  target.GetPersistentExpressionStateForLanguage(language))
-            persistent_state->RemovePersistentVariable(result_var_sp);
-        }
+    // Only mention Fix-Its if the expression evaluator applied them.
+    // Compiler errors refer to the final expression after applying Fix-It(s).
+    if (!fixed_expression.empty() && target.GetEnableNotifyAboutFixIts()) {
+      Stream &error_stream = result.GetErrorStream();
+      error_stream << "  Evaluated this expression after applying Fix-It(s):\n";
+      error_stream << "    " << fixed_expression << "\n";
+    }
 
-      result.SetStatus(eReturnStatusSuccessFinishResult);
-      return true;
-    } else {
+    // If the expression failed, return an error.
+    if (expr_result != eExpressionCompleted) {
       if (valobj_sp)
         result.SetError(valobj_sp->GetError());
       else
         result.AppendErrorWithFormatv(
             "unknown error evaluating expression `{0}`", expr);
-      return false;
+      return;
     }
+
+    if (verbosity != eDWIMPrintVerbosityNone) {
+      StringRef flags;
+      if (args.HasArgs())
+        flags = args.GetArgStringWithDelimiter();
+      result.AppendMessageWithFormatv("note: ran `expression {0}{1}`", flags,
+                                      expr);
+    }
+
+    if (valobj_sp->GetError().GetError() != UserExpression::kNoResult)
+      dump_val_object(*valobj_sp);
+    else
+      result.SetStatus(eReturnStatusSuccessFinishResult);
+
+    if (suppress_result)
+      if (auto result_var_sp =
+              target.GetPersistentVariable(valobj_sp->GetName())) {
+        auto language = valobj_sp->GetPreferredDisplayLanguage();
+        if (auto *persistent_state =
+                target.GetPersistentExpressionStateForLanguage(language))
+          persistent_state->RemovePersistentVariable(result_var_sp);
+      }
   }
 }

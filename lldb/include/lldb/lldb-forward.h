@@ -41,7 +41,6 @@ class BreakpointOptions;
 class BreakpointPrecondition;
 class BreakpointResolver;
 class BreakpointSite;
-class BreakpointSiteList;
 class BroadcastEventSpec;
 class Broadcaster;
 class BroadcasterManager;
@@ -98,6 +97,9 @@ class File;
 class FileSpec;
 class FileSpecList;
 class Flags;
+namespace FormatEntity {
+struct Entry;
+} // namespace FormatEntity
 class FormatManager;
 class FormattersMatchCandidate;
 class FuncUnwinders;
@@ -161,6 +163,7 @@ class PersistentExpressionState;
 class Platform;
 class Process;
 class ProcessAttachInfo;
+class ProcessLaunchInfo;
 class ProcessInfo;
 class ProcessInstanceInfo;
 class ProcessInstanceInfoMatch;
@@ -174,6 +177,7 @@ class REPL;
 class RecognizedStackFrame;
 class RegisterCheckpoint;
 class RegisterContext;
+class RegisterTypeBuilder;
 class RegisterValue;
 class RegularExpression;
 class RichManglingContext;
@@ -181,6 +185,7 @@ class Scalar;
 class ScriptInterpreter;
 class ScriptInterpreterLocker;
 class ScriptedMetadata;
+class ScriptedPlatformInterface;
 class ScriptedProcessInterface;
 class ScriptedThreadInterface;
 class ScriptedSyntheticChildren;
@@ -215,6 +220,7 @@ class SymbolContextScope;
 class SymbolContextSpecifier;
 class SymbolFile;
 class SymbolFileType;
+class SymbolLocator;
 class SymbolVendor;
 class Symtab;
 class SyntheticChildren;
@@ -253,9 +259,11 @@ class TypeImpl;
 class TypeList;
 class TypeListImpl;
 class TypeMap;
+class TypeQuery;
 class TypeMemberFunctionImpl;
 class TypeMemberImpl;
 class TypeNameSpecifierImpl;
+class TypeResults;
 class TypeSummaryImpl;
 class TypeSummaryOptions;
 class TypeSystem;
@@ -283,6 +291,9 @@ class VariableList;
 class Watchpoint;
 class WatchpointList;
 class WatchpointOptions;
+class WatchpointResource;
+class WatchpointResourceCollection;
+class WatchpointSetOptions;
 struct CompilerContext;
 struct LineEntry;
 struct PropertyDefinition;
@@ -331,6 +342,7 @@ typedef std::shared_ptr<lldb_private::ExecutionContextRef>
 typedef std::shared_ptr<lldb_private::ExpressionVariable> ExpressionVariableSP;
 typedef std::unique_ptr<lldb_private::File> FileUP;
 typedef std::shared_ptr<lldb_private::File> FileSP;
+typedef std::shared_ptr<lldb_private::FormatEntity::Entry> FormatEntrySP;
 typedef std::shared_ptr<lldb_private::Function> FunctionSP;
 typedef std::shared_ptr<lldb_private::FuncUnwinders> FuncUnwindersSP;
 typedef std::shared_ptr<lldb_private::InlineFunctionInfo> InlineFunctionInfoSP;
@@ -369,6 +381,8 @@ typedef std::shared_ptr<lldb_private::ProcessLaunchInfo> ProcessLaunchInfoSP;
 typedef std::weak_ptr<lldb_private::Process> ProcessWP;
 typedef std::shared_ptr<lldb_private::RegisterCheckpoint> RegisterCheckpointSP;
 typedef std::shared_ptr<lldb_private::RegisterContext> RegisterContextSP;
+typedef std::shared_ptr<lldb_private::RegisterTypeBuilder>
+    RegisterTypeBuilderSP;
 typedef std::shared_ptr<lldb_private::RegularExpression> RegularExpressionSP;
 typedef std::shared_ptr<lldb_private::Queue> QueueSP;
 typedef std::weak_ptr<lldb_private::Queue> QueueWP;
@@ -380,6 +394,8 @@ typedef std::shared_ptr<lldb_private::ScriptSummaryFormat>
     ScriptSummaryFormatSP;
 typedef std::shared_ptr<lldb_private::ScriptInterpreter> ScriptInterpreterSP;
 typedef std::shared_ptr<lldb_private::ScriptedMetadata> ScriptedMetadataSP;
+typedef std::unique_ptr<lldb_private::ScriptedPlatformInterface>
+    ScriptedPlatformInterfaceUP;
 typedef std::unique_ptr<lldb_private::ScriptedProcessInterface>
     ScriptedProcessInterfaceUP;
 typedef std::shared_ptr<lldb_private::ScriptedThreadInterface>
@@ -455,6 +471,7 @@ typedef std::shared_ptr<lldb_private::Variable> VariableSP;
 typedef std::shared_ptr<lldb_private::VariableList> VariableListSP;
 typedef std::shared_ptr<lldb_private::ValueObjectList> ValueObjectListSP;
 typedef std::shared_ptr<lldb_private::Watchpoint> WatchpointSP;
+typedef std::shared_ptr<lldb_private::WatchpointResource> WatchpointResourceSP;
 
 } // namespace lldb
 
